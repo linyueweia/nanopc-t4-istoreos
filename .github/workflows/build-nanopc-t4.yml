@@ -181,13 +181,13 @@ jobs:
           
           - **源码分支**: istoreos-24.10
           - **目标设备**: NanoPC-T4 (RK3399)
-          - **官方 commit**: ${{ steps.check_update.outputs.skip != 'true' && '' || '' }}
-          - **触发方式**: 自动检测到官方源码更新
+          - **触发方式**: ${{ github.event_name == 'workflow_dispatch' && '手动触发' || '自动检测到官方源码更新' }}
           
-          ### 烧录方法
-          1. 先刷官方 iStoreOS 固件到 NanoPC-T4
-          2. 登录后台 → 系统 → 升级
-          3. 上传此 sysupgrade.img.gz 文件即可升级
+          ### 烧录方法（USB 线刷，无需先装其他系统）
+          1. 下载下方 `*.img.gz` 文件并解压
+          2. NanoPC-T4 按住 Recovery 按钮，用 Type-C USB 线连接电脑
+          3. 打开 RKDevTool → Upgrade Firmware → 选择解压后的 img 文件
+          4. 点击 Upgrade 等待刷入完成
         files: ${{ steps.collect.outputs.output_dir }}/*
         fail_on_unmatched_files: false
         make_latest: true
