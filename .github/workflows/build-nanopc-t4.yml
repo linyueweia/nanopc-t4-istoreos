@@ -28,7 +28,6 @@ jobs:
         sudo rm -rf /usr/local/share/chromium /usr/local/lib/node_modules
         sudo apt-get clean
         sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
-        sudo mkdir -p /tmp/cleanup && sudo mount -t tmpfs -o size=1G tmpfs /tmp/cleanup 2>/dev/null || true
         echo "=== 磁盘空间 (清理后) ==="
         df -h /
 
@@ -67,14 +66,10 @@ jobs:
       run: |
         echo "=== 应用配置 ==="
         cp $GITHUB_WORKSPACE/.config .config
-        # 验证配置
         echo "目标设备:"
         grep "CONFIG_TARGET" .config
-        # 自动补全配置
         make defconfig
-        # 验证最终配置
         echo "=== 最终配置验证 ==="
-        grep "CONFIG_TARGET" .config
         grep "CONFIG_TARGET_rockchip_armv8_DEVICE" .config || {
           echo "错误: 未找到 NanoPC-T4 设备配置!"
           exit 1
@@ -86,53 +81,104 @@ jobs:
         echo "=== 下载软件包 ==="
         make download -j8 V=s
         echo "=== 下载完成 ==="
-        ls -lh dl/ | head -20
 
     - name: Build firmware
       working-directory: source
       run: |
-        echo "=== 开始编译 (使用 2 线程避免 OOM) ==="
+        echo "=== 开始编译 ==="
         echo "开始时间: $(date)"
-        # 使用 2 线程编译，避免内存不足
-        make -j2 V=s || {
-          echo "=== 多线程失败，尝试单线程 ==="
-          make -j1 V=s
-        }
+        make -j2 V=s || make -j1 V=s
         echo "=== 编译完成 ==="
         echo "结束时间: $(date)"
 
-    - name: Collect firmware
+    - name: Collect and verify firmware
+      id: collect
       run: |
         echo "=== 收集编译产物 ==="
-        mkdir -p $GITHUB_WORKSPACE/output
-        cd source
+        # 使用绝对路径
+        SOURCE_DIR="${GITHUB_WORKSPACE}/source"
+        OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
         
-        # 查找所有固件文件
-        echo "查找固件文件..."
-        find bin/targets/ -maxdepth 3 -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" -o -name "*.itb" \) 2>/dev/null
+        # 清理并创建输出目录
+        rm -rf "$OUTPUT_DIR"
+        mkdir -p "$OUTPUT_DIR"
         
-        # 复制固件文件
-        find bin/targets/ -maxdepth 3 -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" -o -name "*.itb" \) \
-          -exec cp {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null
+        echo "源码目录: $SOURCE_DIR"
+        echo "输出目录: $OUTPUT_DIR"
         
-        # 如果没找到，复制整个 targets 目录
-        if [ -z "$(ls -A $GITHUB_WORKSPACE/output/ 2>/dev/null)" ]; then
-          echo "未找到标准固件文件，复制整个 targets 目录..."
-          cp -r bin/targets/* $GITHUB_WORKSPACE/output/ 2>/dev/null || true
+        # 查找所有固件文件 (使用多种模式)
+        echo "=== 查找固件文件 ==="
+        
+        # 查找 .img.gz 文件
+        find "$SOURCE_DIR/bin/targets/" -name "*.img.gz" -type f 2>/dev/null | while read f; do
+          echo "找到: $f"
+          cp "$f" "$OUTPUT_DIR/"
+        done
+        
+        # 查找 .img 文件
+        find "$SOURCE_DIR/bin/targets/" -name "*.img" -type f 2>/dev/null | while read f; do
+          echo "找到: $f"
+          cp "$f" "$OUTPUT_DIR/"
+        done
+        
+        # 查找 .itb 文件 (内核)
+        find "$SOURCE_DIR/bin/targets/" -name "*.itb" -type f 2>/dev/null | while read f; do
+          echo "找到: $f"
+          cp "$f" "$OUTPUT_DIR/"
+        done
+        
+        # 查找 .bin 文件
+        find "$SOURCE_DIR/bin/targets/" -name "*.bin" -type f 2>/dev/null | while read f; do
+          echo "找到: $f"
+          cp "$f" "$OUTPUT_DIR/"
+        done
+        
+        # 如果没找到标准文件，尝试复制整个 targets 目录
+        if [ -z "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
+          echo "=== 未找到标准固件文件，复制 targets 目录 ==="
+          cp -rv "$SOURCE_DIR/bin/targets/"* "$OUTPUT_DIR/" 2>/dev/null || true
         fi
         
-        echo "=== 产物列表 ==="
-        ls -lhR $GITHUB_WORKSPACE/output/ | head -50
-        echo "=== 产物总大小 ==="
-        du -sh $GITHUB_WORKSPACE/output/
+        # 验证输出
+        echo "=== 输出目录内容 ==="
+        ls -lhR "$OUTPUT_DIR/" 2>/dev/null | head -50
+        
+        echo "=== 输出目录大小 ==="
+        du -sh "$OUTPUT_DIR/"
+        
+        # 检查是否有文件
+        FILE_COUNT=$(find "$OUTPUT_DIR" -type f 2>/dev/null | wc -l)
+        echo "文件总数: $FILE_COUNT"
+        
+        if [ "$FILE_COUNT" -eq 0 ]; then
+          echo "错误: 输出目录为空!"
+          echo "=== 检查源码目录结构 ==="
+          ls -la "$SOURCE_DIR/bin/targets/" 2>/dev/null
+          find "$SOURCE_DIR/bin/" -maxdepth 4 -type f -name "*.img*" 2>/dev/null | head -20
+          exit 1
+        fi
+        
+        # 设置输出变量
+        echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware
+    - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
-        name: iStoreOS-NanoPC-T4-firmware-${{ github.run_id }}
-        path: output/
+        name: iStoreOS-NanoPC-T4-${{ github.run_id }}
+        path: ${{ steps.collect.outputs.output_dir }}/
         retention-days: 30
-        if-no-files-found: warn
+        if-no-files-found: error
+
+    - name: Upload firmware to release (optional)
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: build-${{ github.run_id }}
+        name: iStoreOS NanoPC-T4 Build ${{ github.run_id }}
+        files: ${{ steps.collect.outputs.output_dir }}/*
+        fail_on_unmatched_files: false
+      continue-on-error: true
 
     - name: Build summary
       if: always()
@@ -143,14 +189,25 @@ jobs:
         echo "分支: istoreos-24.10"
         echo "目标: NanoPC-T4 (RK3399)"
         echo ""
-        if [ -d "output" ] && [ "$(ls -A output/ 2>/dev/null)" ]; then
+        
+        OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
+        if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
+          echo "✅ 固件文件:"
+          ls -lh "$OUTPUT_DIR/" | head -20
+          echo ""
           echo "✅ 固件已上传至 Artifacts"
           echo "下载地址: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo ""
           echo "烧录命令:"
-          echo "  gunzip iStoreOS-*-NanoPC*.img.gz"
-          echo "  sudo dd if=iStoreOS-*-NanoPC*.img of=/dev/sdX bs=1M status=progress"
+          echo "  cd output"
+          echo "  gunzip *.img.gz"
+          echo "  sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
         else
           echo "❌ 未找到固件文件"
           echo "请检查编译日志"
+          echo ""
+          echo "可能原因:"
+          echo "1. 磁盘空间不足"
+          echo "2. 编译失败"
+          echo "3. 输出目录路径错误"
         fi
