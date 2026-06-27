@@ -10,6 +10,10 @@ on:
       - '.config'
       - '.github/workflows/build-nanopc-t4.yml'
 
+# ★ 关键: 给 GITHUB_TOKEN 添加 Release 写入权限
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -95,90 +99,79 @@ jobs:
       id: collect
       run: |
         echo "=== 收集编译产物 ==="
-        # 使用绝对路径
         SOURCE_DIR="${GITHUB_WORKSPACE}/source"
         OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
         
-        # 清理并创建输出目录
         rm -rf "$OUTPUT_DIR"
         mkdir -p "$OUTPUT_DIR"
         
         echo "源码目录: $SOURCE_DIR"
         echo "输出目录: $OUTPUT_DIR"
         
-        # 查找所有固件文件 (使用多种模式)
-        echo "=== 查找固件文件 ==="
+        # ★ 查找 bin/targets 下的所有文件
+        echo "=== bin/targets 目录结构 ==="
+        find "$SOURCE_DIR/bin/targets/" -maxdepth 4 -type f 2>/dev/null | head -50
         
-        # 查找 .img.gz 文件
-        find "$SOURCE_DIR/bin/targets/" -name "*.img.gz" -type f 2>/dev/null | while read f; do
-          echo "找到: $f"
+        # ★ 查找所有 .img.gz 和 .img 文件（包括固件安装包）
+        echo ""
+        echo "=== 查找所有固件文件 ==="
+        find "$SOURCE_DIR/bin/targets/" -type f \( \
+          -name "*.img.gz" -o \
+          -name "*.img" -o \
+          -name "*.itb" -o \
+          -name "*.bin" -o \
+          -name "*.eflasher" -o \
+          -name "*.sdcard" \
+        \) 2>/dev/null | while read f; do
+          SIZE=$(du -h "$f" | cut -f1)
+          echo "找到 [$SIZE]: $(basename $f)"
           cp "$f" "$OUTPUT_DIR/"
         done
         
-        # 查找 .img 文件
-        find "$SOURCE_DIR/bin/targets/" -name "*.img" -type f 2>/dev/null | while read f; do
-          echo "找到: $f"
-          cp "$f" "$OUTPUT_DIR/"
-        done
-        
-        # 查找 .itb 文件 (内核)
-        find "$SOURCE_DIR/bin/targets/" -name "*.itb" -type f 2>/dev/null | while read f; do
-          echo "找到: $f"
-          cp "$f" "$OUTPUT_DIR/"
-        done
-        
-        # 查找 .bin 文件
-        find "$SOURCE_DIR/bin/targets/" -name "*.bin" -type f 2>/dev/null | while read f; do
-          echo "找到: $f"
-          cp "$f" "$OUTPUT_DIR/"
-        done
-        
-        # 如果没找到标准文件，尝试复制整个 targets 目录
-        if [ -z "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
-          echo "=== 未找到标准固件文件，复制 targets 目录 ==="
-          cp -rv "$SOURCE_DIR/bin/targets/"* "$OUTPUT_DIR/" 2>/dev/null || true
-        fi
-        
-        # 验证输出
+        echo ""
         echo "=== 输出目录内容 ==="
-        ls -lhR "$OUTPUT_DIR/" 2>/dev/null | head -50
+        ls -lh "$OUTPUT_DIR/" 2>/dev/null
         
-        echo "=== 输出目录大小 ==="
+        echo ""
+        echo "=== 输出目录总大小 ==="
         du -sh "$OUTPUT_DIR/"
         
-        # 检查是否有文件
         FILE_COUNT=$(find "$OUTPUT_DIR" -type f 2>/dev/null | wc -l)
         echo "文件总数: $FILE_COUNT"
         
         if [ "$FILE_COUNT" -eq 0 ]; then
-          echo "错误: 输出目录为空!"
-          echo "=== 检查源码目录结构 ==="
-          ls -la "$SOURCE_DIR/bin/targets/" 2>/dev/null
-          find "$SOURCE_DIR/bin/" -maxdepth 4 -type f -name "*.img*" 2>/dev/null | head -20
+          echo "❌ 错误: 输出目录为空!"
+          echo "=== 检查完整目录结构 ==="
+          find "$SOURCE_DIR/bin/" -maxdepth 4 -type d 2>/dev/null
           exit 1
         fi
         
-        # 设置输出变量
-        echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
         echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: iStoreOS-NanoPC-T4-${{ github.run_id }}
-        path: ${{ steps.collect.outputs.output_dir }}/
-        retention-days: 30
-        if-no-files-found: error
-
-    - name: Upload firmware to release (optional)
-      if: success()
+    - name: Upload firmware to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: build-${{ github.run_id }}
-        name: iStoreOS NanoPC-T4 Build ${{ github.run_id }}
+        name: "iStoreOS NanoPC-T4 Build ${{ github.run_id }}"
+        body: |
+          ## iStoreOS NanoPC-T4 固件
+          
+          - **源码分支**: istoreos-24.10
+          - **目标设备**: NanoPC-T4 (RK3399)
+          - **编译时间**: ${{ github.event.head_commit.timestamp }}
+          - **触发方式**: ${{ github.event_name }}
+          
+          ### 烧录方法
+          ```bash
+          # 解压
+          gunzip *.img.gz
+          # 写入 SD 卡
+          sudo dd if=*.img of=/dev/sdX bs=1M status=progress
+          sync
+          ```
         files: ${{ steps.collect.outputs.output_dir }}/*
         fail_on_unmatched_files: false
-      continue-on-error: true
+        make_latest: true
 
     - name: Build summary
       if: always()
@@ -192,22 +185,15 @@ jobs:
         
         OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
         if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
-          echo "✅ 固件文件:"
-          ls -lh "$OUTPUT_DIR/" | head -20
+          echo "固件文件:"
+          ls -lh "$OUTPUT_DIR/"
           echo ""
-          echo "✅ 固件已上传至 Artifacts"
-          echo "下载地址: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TAG="build-${{ github.run_id }}"
+          echo "Release 地址: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
+          echo "Actions 地址: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo ""
           echo "烧录命令:"
-          echo "  cd output"
-          echo "  gunzip *.img.gz"
-          echo "  sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
+          echo "  cd output && gunzip *.img.gz && sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
         else
           echo "❌ 未找到固件文件"
-          echo "请检查编译日志"
-          echo ""
-          echo "可能原因:"
-          echo "1. 磁盘空间不足"
-          echo "2. 编译失败"
-          echo "3. 输出目录路径错误"
         fi
