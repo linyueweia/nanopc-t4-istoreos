@@ -2,13 +2,8 @@ name: Build iStoreOS NanoPC-T4
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * 1'
   push:
     branches: [ main ]
-    paths:
-      - '.config'
-      - '.github/workflows/build-nanopc-t4.yml'
 
 # ★ 关键: 给 GITHUB_TOKEN 添加 Release 写入权限
 permissions:
