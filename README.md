@@ -13,18 +13,52 @@
 ## 🚀 云编译 (GitHub Actions)
 
 ### 自动编译
-- 每周一凌晨 2:00 自动检查更新并编译
-- 推送到 main 分支时自动编译
+- 每天自动检查 iStoreOS 官方源码是否有更新
+- 有更新时自动编译并发布到 Release
 
 ### 手动触发
 1. 打开 [Actions](../../actions) 页面
-2. 选择 "Build iStoreOS for NanoPC-T4"
-3. 点击 "Run workflow"
+2. 选择 "Build iStoreOS NanoPC-T4"
+3. 点击 "Run workflow"（强制编译，不检查更新）
 
 ### 下载固件
-1. 打开 [Actions](../../actions) 页面
-2. 点击最近的编译任务
-3. 在 "Artifacts" 部分下载 `iStoreOS-NanoPC-T4-firmware`
+1. 打开 [Releases](../../releases) 页面
+2. 下载最新版本的 `*.img.gz` 文件
+
+## 🔧 烧录固件（USB 线刷）
+
+### 方法1: USB 线刷到 eMMC（推荐）
+
+NanoPC-T4 支持通过 Type-C USB 线刷入系统，**无需先安装其他系统**。
+
+**准备工作：**
+1. 下载固件 `*.img.gz` 并解压得到 `*.img` 文件
+2. 下载 [RKDevTool](https://dl.friendlyelec.com/rkdevtool)（Windows 工具）
+3. 安装 USB 驱动
+
+**刷机步骤：**
+1. NanoPC-T4 按住 **Recovery 按钮** 不放，用 Type-C USB 线连接电脑
+2. 打开 RKDevTool，设备会显示 "Found One LOADER Device"
+3. 在 RKDevTool 中选择 "Upgrade Firmware" 标签页
+4. 选择解压后的 `*.img` 文件
+5. 点击 "Upgrade" 开始刷入
+6. 等待刷入完成，设备自动重启
+
+### 方法2: SD 卡启动
+```bash
+# 解压固件
+gunzip *.img.gz
+
+# 写入 SD 卡 (替换 /dev/sdX 为你的 SD 卡设备)
+sudo dd if=*.img of=/dev/sdX bs=1M status=progress
+sync
+```
+
+### 方法3: 在线升级
+如果系统已经可以运行 iStoreOS：
+1. 登录 iStoreOS 后台
+2. 进入 系统 → 升级
+3. 上传 `sysupgrade.img.gz` 文件即可升级
 
 ## 💻 本地编译
 
@@ -40,94 +74,39 @@
 git clone https://github.com/linyueweia/nanopc-t4-istoreos.git
 cd nanopc-t4-istoreos
 
-# 一键编译 (安装依赖 + 克隆源码 + 编译)
+# 一键编译
 chmod +x build.sh
 ./build.sh all
-```
-
-### 分步编译
-```bash
-# 1. 安装依赖
-./build.sh deps
-
-# 2. 克隆源码
-./build.sh clone
-
-# 3. 更新 feeds
-./build.sh feeds
-
-# 4. 应用配置
-./build.sh config
-
-# 5. 下载软件包
-./build.sh download
-
-# 6. 编译固件
-./build.sh build
-
-# 7. 查看结果
-./build.sh result
-```
-
-### 使用 menuconfig 自定义
-```bash
-cd source
-make menuconfig
-# 选择 Target System → Rockchip ARMv8
-# 选择 Target Profile → FriendlyARM NanoPC T4
-# 保存退出
-make -j$(nproc) V=s
-```
-
-## 🔧 烧录固件
-
-### SD 卡启动
-```bash
-# 解压固件
-gunzip bin/targets/rockchip/armv8/*NanoPC*.img.gz
-
-# 写入 SD 卡 (替换 /dev/sdX 为你的 SD 卡设备)
-sudo dd if=bin/targets/rockchip/armv8/*NanoPC*.img of=/dev/sdX bs=1M status=progress
-sync
-```
-
-### eMMC 启动
-1. 先从 SD 卡启动系统
-2. 登录后执行:
-```bash
-cd /root
-mkimage -T script -n boot.scr.uIMG -d boot.cmd boot.scr
-# 或使用官方刷机工具
 ```
 
 ## 📁 仓库结构
 
 ```
 nanopc-t4-istoreos/
-├── .github/
-│   └── workflows/
-│       └── build-nanopc-t4.yml  # GitHub Actions 编译工作流
-├── .config                       # NanoPC-T4 编译配置
-├── build.sh                      # 本地编译脚本
-└── README.md                     # 本文档
+├── .github/workflows/
+│   └── build-nanopc-t4.yml  # GitHub Actions 编译工作流
+├── .config                   # NanoPC-T4 编译配置
+├── last_commit.txt           # 记录上次编译的官方 commit
+├── build.sh                  # 本地编译脚本
+└── README.md
 ```
 
 ## 🔗 相关链接
 
 - [iStoreOS 官方仓库](https://github.com/istoreos/istoreos)
 - [NanoPC-T4 Wiki](https://wiki.friendlyelec.com/wiki/index.php/NanoPC-T4/zh)
-- [OpenWrt 编译文档](https://openwrt.org/docs/guide-developer/build-system/start)
+- [RKDevTool 刷机工具](https://dl.friendlyelec.com/rkdevtool)
 
 ## ❓ 常见问题
+
+### Q: 固件多大？解压后 138MB 正常吗？
+A: 正常。sysupgrade.img.gz 压缩后约 12-13MB，解压后约 138MB，这是 iStoreOS 标准大小。
 
 ### Q: 编译失败怎么办？
 A: 检查磁盘空间是否充足（需要 100GB+），内存是否足够（16GB+）。可以在 Actions 页面查看详细日志。
 
-### Q: 如何添加自定义软件包？
-A: 编辑 `.config` 文件，添加对应的 `CONFIG_PACKAGE_xxx=y` 配置项。
-
-### Q: 编译太慢怎么办？
-A: OpenWrt 编译通常需要 2-6 小时，取决于机器性能。GitHub Actions 限制 6 小时，本地编译无此限制。
+### Q: 有更新时会自动编译吗？
+A: 是的。每天自动检查 iStoreOS 官方源码，有新 commit 就自动编译并发布到 Release。
 
 ---
 
