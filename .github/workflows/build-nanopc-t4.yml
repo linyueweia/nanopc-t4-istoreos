@@ -1,0 +1,126 @@
+name: Build iStoreOS for NanoPC-T4
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一凌晨2点检查更新并编译
+  push:
+    branches: [ main ]
+    paths:
+      - '.config'
+      - '.github/workflows/build-nanopc-t4.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        echo "=== 清理磁盘空间 ==="
+        df -h /
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+        sudo apt-get clean
+        sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
+        echo "=== 清理后 ==="
+        df -h /
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install \
+          ack antlr3 asciidoc autoconf automake autopoint binutils \
+          bison build-essential bzip2 ccache cmake cpio curl \
+          device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+          g++-multilib git gnutls-dev gperf haveged help2man intltool \
+          lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev \
+          libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev \
+          libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+          libtool libz-dev lrzsz mkisofs msmtp nano ninja-build p7zip \
+          p7zip-full patch pkgconf python3 python3-pip \
+          python3-ply python3-pyelftools python3-setuptools \
+          qemu-utils rsync scons squashfs-tools subversion swig \
+          texinfo uglifyjs unzip vim wget xmlto xxd zlib1g-dev
+
+    - name: Clone iStoreOS source
+      run: |
+        echo "=== 克隆 iStoreOS 源码 (istoreos-24.10 分支) ==="
+        git clone --depth 1 -b istoreos-24.10 https://github.com/istoreos/istoreos.git source
+        echo "=== 源码克隆完成 ==="
+        du -sh source/
+
+    - name: Update & install feeds
+      working-directory: source
+      run: |
+        echo "=== 更新 feeds ==="
+        ./scripts/feeds update -a
+        echo "=== 安装 feeds ==="
+        ./scripts/feeds install -a
+
+    - name: Apply NanoPC-T4 config
+      working-directory: source
+      run: |
+        echo "=== 应用 NanoPC-T4 编译配置 ==="
+        cp $GITHUB_WORKSPACE/.config .config
+        # 确保只编译 NanoPC-T4
+        grep -q "CONFIG_TARGET_rockchip_armv8=y" .config || {
+          echo "错误: .config 中未找到 NanoPC-T4 目标配置"
+          exit 1
+        }
+        echo "=== 配置内容预览 ==="
+        grep "CONFIG_TARGET" .config | head -10
+        make defconfig
+
+    - name: Download packages
+      working-directory: source
+      run: |
+        echo "=== 下载软件包 ==="
+        make download -j$(nproc) V=s
+        find dl -size -1024c -exec ls -l {} \;
+        echo "=== 下载完成 ==="
+
+    - name: Build firmware
+      working-directory: source
+      run: |
+        echo "=== 开始编译 iStoreOS for NanoPC-T4 ==="
+        echo "时间: $(date)"
+        make -j$(nproc) V=s || make -j1 V=s
+        echo "=== 编译完成 ==="
+        echo "时间: $(date)"
+
+    - name: Collect output
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/output
+        cd source
+        # 复制编译产物
+        find bin/targets/ -name "*.img.gz" -o -name "*.img" -o -name "*.bin" 2>/dev/null | head -20
+        cp -r bin/targets/* $GITHUB_WORKSPACE/output/ 2>/dev/null || true
+        echo "=== 产物列表 ==="
+        find $GITHUB_WORKSPACE/output -type f | head -30
+        du -sh $GITHUB_WORKSPACE/output/
+
+    - name: Upload firmware
+      uses: actions/upload-artifact@v4
+      with:
+        name: iStoreOS-NanoPC-T4-firmware
+        path: output/
+        retention-days: 30
+
+    - name: Build summary
+      if: always()
+      run: |
+        echo "============================================"
+        echo "  iStoreOS NanoPC-T4 固件编译完成"
+        echo "============================================"
+        echo "分支: istoreos-24.10"
+        echo "目标: NanoPC-T4 (RK3399)"
+        echo "设备: friendlyarm,nanopc-t4"
+        echo ""
+        echo "固件已上传至 Artifacts，可在 Actions 页面下载"
+        echo "下载后用 dd 写入 SD 卡:"
+        echo "  gunzip *.img.gz"
+        echo "  sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
