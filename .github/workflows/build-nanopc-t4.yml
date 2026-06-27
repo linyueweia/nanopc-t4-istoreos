@@ -141,25 +141,42 @@ jobs:
         
         echo "=== 查找所有固件文件 ==="
         
-        # 先查找 .img 文件（未压缩）
-        find "$SOURCE_DIR/bin/targets/" -type f -name "*.img" ! -name "*.img.gz" 2>/dev/null | while read f; do
+        # 先查找 .img 文件（未压缩），只取 squashfs 版本
+        find "$SOURCE_DIR/bin/targets/" -type f -name "*.squashfs*.img" ! -name "*.img.gz" 2>/dev/null | head -1 | while read f; do
           SIZE=$(du -h "$f" | cut -f1)
           echo "找到 [$SIZE]: $(basename $f)"
           cp "$f" "$OUTPUT_DIR/"
         done
         
-        # 如果没有 .img 文件，查找 .img.gz 并解压
+        # 如果没有 squashfs .img，尝试查找任意 .img
+        if [ -z "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
+          find "$SOURCE_DIR/bin/targets/" -type f -name "*.img" ! -name "*.img.gz" 2>/dev/null | head -1 | while read f; do
+            SIZE=$(du -h "$f" | cut -f1)
+            echo "找到 [$SIZE]: $(basename $f)"
+            cp "$f" "$OUTPUT_DIR/"
+          done
+        fi
+        
+        # 如果没有 .img 文件，查找 .img.gz 并解压，只取 squashfs 版本
         if [ -z "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
           echo "未找到未压缩固件，解压 .img.gz 文件..."
-          find "$SOURCE_DIR/bin/targets/" -type f -name "*.img.gz" 2>/dev/null | while read f; do
+          find "$SOURCE_DIR/bin/targets/" -type f -name "*squashfs*.img.gz" 2>/dev/null | head -1 | while read f; do
             SIZE=$(du -h "$f" | cut -f1)
             echo "解压 [$SIZE]: $(basename $f)"
             gunzip -k "$f"
-            # 复制解压后的 .img 文件
             cp "${f%.gz}" "$OUTPUT_DIR/"
-            # 清理解压产生的临时文件
             rm -f "${f%.gz}"
           done
+          # 如果没有 squashfs，取任意 .img.gz
+          if [ -z "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
+            find "$SOURCE_DIR/bin/targets/" -type f -name "*.img.gz" 2>/dev/null | head -1 | while read f; do
+              SIZE=$(du -h "$f" | cut -f1)
+              echo "解压 [$SIZE]: $(basename $f)"
+              gunzip -k "$f"
+              cp "${f%.gz}" "$OUTPUT_DIR/"
+              rm -f "${f%.gz}"
+            done
+          fi
         fi
         
         # 查找其他格式的固件
