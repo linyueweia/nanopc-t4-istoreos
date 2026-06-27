@@ -2,10 +2,9 @@ name: Build iStoreOS NanoPC-T4
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  schedule:
+    - cron: '0 4 * * *'  # 每天凌晨4点(UTC)检查官方源码是否有更新
 
-# ★ 关键: 给 GITHUB_TOKEN 添加 Release 写入权限
 permissions:
   contents: write
 
@@ -18,7 +17,30 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Check for official source updates
+      id: check_update
+      run: |
+        echo "=== 检查 iStoreOS 官方源码是否有更新 ==="
+        
+        # 获取官方仓库最新 commit
+        LATEST_COMMIT=$(curl -s "https://api.github.com/repos/istoreos/istoreos/commits/istoreos-24.10" | grep '"sha"' | head -1 | cut -d'"' -f4)
+        echo "官方最新 commit: $LATEST_COMMIT"
+        
+        # 读取上次编译时的 commit
+        LAST_COMMIT=$(cat $GITHUB_WORKSPACE/last_commit.txt 2>/dev/null || echo "")
+        echo "上次编译 commit: $LAST_COMMIT"
+        
+        if [ "$LATEST_COMMIT" = "$LAST_COMMIT" ]; then
+          echo "✅ 官方源码无更新，跳过编译"
+          echo "skip=true" >> $GITHUB_OUTPUT
+        else
+          echo "🔄 官方源码有更新，开始编译"
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "$LATEST_COMMIT" > $GITHUB_WORKSPACE/last_commit.txt
+        fi
+
     - name: Free disk space
+      if: steps.check_update.outputs.skip != 'true'
       run: |
         echo "=== 磁盘空间 (清理前) ==="
         df -h /
@@ -31,6 +53,7 @@ jobs:
         df -h /
 
     - name: Install build dependencies
+      if: steps.check_update.outputs.skip != 'true'
       run: |
         sudo apt-get update
         sudo apt-get -y install \
@@ -48,6 +71,7 @@ jobs:
           texinfo uglifyjs unzip vim wget xmlto xxd zlib1g-dev
 
     - name: Clone iStoreOS source
+      if: steps.check_update.outputs.skip != 'true'
       run: |
         echo "=== 克隆 iStoreOS 源码 (istoreos-24.10) ==="
         git clone --depth 1 -b istoreos-24.10 https://github.com/istoreos/istoreos.git source
@@ -55,12 +79,14 @@ jobs:
         du -sh source/
 
     - name: Update & install feeds
+      if: steps.check_update.outputs.skip != 'true'
       working-directory: source
       run: |
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
     - name: Apply NanoPC-T4 config
+      if: steps.check_update.outputs.skip != 'true'
       working-directory: source
       run: |
         echo "=== 应用配置 ==="
@@ -75,6 +101,7 @@ jobs:
         }
 
     - name: Download packages
+      if: steps.check_update.outputs.skip != 'true'
       working-directory: source
       run: |
         echo "=== 下载软件包 ==="
@@ -82,6 +109,7 @@ jobs:
         echo "=== 下载完成 ==="
 
     - name: Build firmware
+      if: steps.check_update.outputs.skip != 'true'
       working-directory: source
       run: |
         echo "=== 开始编译 ==="
@@ -91,6 +119,7 @@ jobs:
         echo "结束时间: $(date)"
 
     - name: Collect and verify firmware
+      if: steps.check_update.outputs.skip != 'true'
       id: collect
       run: |
         echo "=== 收集编译产物 ==="
@@ -103,12 +132,6 @@ jobs:
         echo "源码目录: $SOURCE_DIR"
         echo "输出目录: $OUTPUT_DIR"
         
-        # ★ 查找 bin/targets 下的所有文件
-        echo "=== bin/targets 目录结构 ==="
-        find "$SOURCE_DIR/bin/targets/" -maxdepth 4 -type f 2>/dev/null | head -50
-        
-        # ★ 查找所有 .img.gz 和 .img 文件（包括固件安装包）
-        echo ""
         echo "=== 查找所有固件文件 ==="
         find "$SOURCE_DIR/bin/targets/" -type f \( \
           -name "*.img.gz" -o \
@@ -127,7 +150,6 @@ jobs:
         echo "=== 输出目录内容 ==="
         ls -lh "$OUTPUT_DIR/" 2>/dev/null
         
-        echo ""
         echo "=== 输出目录总大小 ==="
         du -sh "$OUTPUT_DIR/"
         
@@ -136,14 +158,13 @@ jobs:
         
         if [ "$FILE_COUNT" -eq 0 ]; then
           echo "❌ 错误: 输出目录为空!"
-          echo "=== 检查完整目录结构 ==="
-          find "$SOURCE_DIR/bin/" -maxdepth 4 -type d 2>/dev/null
           exit 1
         fi
         
         echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to GitHub Release
+      if: steps.check_update.outputs.skip != 'true'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: build-${{ github.run_id }}
@@ -153,42 +174,49 @@ jobs:
           
           - **源码分支**: istoreos-24.10
           - **目标设备**: NanoPC-T4 (RK3399)
-          - **编译时间**: ${{ github.event.head_commit.timestamp }}
-          - **触发方式**: ${{ github.event_name }}
+          - **官方 commit**: ${{ steps.check_update.outputs.skip != 'true' && '' || '' }}
+          - **触发方式**: 自动检测到官方源码更新
           
           ### 烧录方法
-          ```bash
-          # 解压
-          gunzip *.img.gz
-          # 写入 SD 卡
-          sudo dd if=*.img of=/dev/sdX bs=1M status=progress
-          sync
-          ```
+          1. 先刷官方 iStoreOS 固件到 NanoPC-T4
+          2. 登录后台 → 系统 → 升级
+          3. 上传此 sysupgrade.img.gz 文件即可升级
         files: ${{ steps.collect.outputs.output_dir }}/*
         fail_on_unmatched_files: false
         make_latest: true
 
+    - name: Update last commit hash
+      if: steps.check_update.outputs.skip != 'true' && success()
+      run: |
+        echo "=== 更新上次编译 commit ==="
+        cat $GITHUB_WORKSPACE/last_commit.txt
+
     - name: Build summary
       if: always()
       run: |
-        echo "============================================"
-        echo "  iStoreOS NanoPC-T4 编译结果"
-        echo "============================================"
-        echo "分支: istoreos-24.10"
-        echo "目标: NanoPC-T4 (RK3399)"
-        echo ""
+        SKIP="${{ steps.check_update.outputs.skip }}"
         
-        OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
-        if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
-          echo "固件文件:"
-          ls -lh "$OUTPUT_DIR/"
-          echo ""
-          TAG="build-${{ github.run_id }}"
-          echo "Release 地址: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
-          echo "Actions 地址: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo ""
-          echo "烧录命令:"
-          echo "  cd output && gunzip *.img.gz && sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
+        if [ "$SKIP" = "true" ]; then
+          echo "============================================"
+          echo "  ✅ 官方源码无更新，跳过编译"
+          echo "============================================"
+          echo "官方最新 commit: $(cat $GITHUB_WORKSPACE/last_commit.txt 2>/dev/null)"
         else
-          echo "❌ 未找到固件文件"
+          echo "============================================"
+          echo "  iStoreOS NanoPC-T4 编译结果"
+          echo "============================================"
+          echo "分支: istoreos-24.10"
+          echo "目标: NanoPC-T4 (RK3399)"
+          echo ""
+          
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
+          if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A "$OUTPUT_DIR/" 2>/dev/null)" ]; then
+            echo "固件文件:"
+            ls -lh "$OUTPUT_DIR/"
+            echo ""
+            TAG="build-${{ github.run_id }}"
+            echo "Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
+          else
+            echo "❌ 未找到固件文件"
+          fi
         fi
