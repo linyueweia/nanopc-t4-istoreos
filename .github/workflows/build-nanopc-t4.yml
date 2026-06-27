@@ -1,9 +1,9 @@
-name: Build iStoreOS for NanoPC-T4
+name: Build iStoreOS NanoPC-T4
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * 1'  # 每周一凌晨2点检查更新并编译
+    - cron: '0 2 * * 1'
   push:
     branches: [ main ]
     paths:
@@ -21,12 +21,15 @@ jobs:
 
     - name: Free disk space
       run: |
-        echo "=== 清理磁盘空间 ==="
+        echo "=== 磁盘空间 (清理前) ==="
         df -h /
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+        sudo rm -rf /usr/share/swift /usr/local/graalvm /usr/local/share/powershell
+        sudo rm -rf /usr/local/share/chromium /usr/local/lib/node_modules
         sudo apt-get clean
         sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
-        echo "=== 清理后 ==="
+        sudo mkdir -p /tmp/cleanup && sudo mount -t tmpfs -o size=1G tmpfs /tmp/cleanup 2>/dev/null || true
+        echo "=== 磁盘空间 (清理后) ==="
         df -h /
 
     - name: Install build dependencies
@@ -48,79 +51,106 @@ jobs:
 
     - name: Clone iStoreOS source
       run: |
-        echo "=== 克隆 iStoreOS 源码 (istoreos-24.10 分支) ==="
+        echo "=== 克隆 iStoreOS 源码 (istoreos-24.10) ==="
         git clone --depth 1 -b istoreos-24.10 https://github.com/istoreos/istoreos.git source
-        echo "=== 源码克隆完成 ==="
+        echo "=== 源码大小 ==="
         du -sh source/
 
     - name: Update & install feeds
       working-directory: source
       run: |
-        echo "=== 更新 feeds ==="
         ./scripts/feeds update -a
-        echo "=== 安装 feeds ==="
         ./scripts/feeds install -a
 
     - name: Apply NanoPC-T4 config
       working-directory: source
       run: |
-        echo "=== 应用 NanoPC-T4 编译配置 ==="
+        echo "=== 应用配置 ==="
         cp $GITHUB_WORKSPACE/.config .config
-        # 确保只编译 NanoPC-T4
-        grep -q "CONFIG_TARGET_rockchip_armv8=y" .config || {
-          echo "错误: .config 中未找到 NanoPC-T4 目标配置"
+        # 验证配置
+        echo "目标设备:"
+        grep "CONFIG_TARGET" .config
+        # 自动补全配置
+        make defconfig
+        # 验证最终配置
+        echo "=== 最终配置验证 ==="
+        grep "CONFIG_TARGET" .config
+        grep "CONFIG_TARGET_rockchip_armv8_DEVICE" .config || {
+          echo "错误: 未找到 NanoPC-T4 设备配置!"
           exit 1
         }
-        echo "=== 配置内容预览 ==="
-        grep "CONFIG_TARGET" .config | head -10
-        make defconfig
 
     - name: Download packages
       working-directory: source
       run: |
         echo "=== 下载软件包 ==="
-        make download -j$(nproc) V=s
-        find dl -size -1024c -exec ls -l {} \;
+        make download -j8 V=s
         echo "=== 下载完成 ==="
+        ls -lh dl/ | head -20
 
     - name: Build firmware
       working-directory: source
       run: |
-        echo "=== 开始编译 iStoreOS for NanoPC-T4 ==="
-        echo "时间: $(date)"
-        make -j$(nproc) V=s || make -j1 V=s
+        echo "=== 开始编译 (使用 2 线程避免 OOM) ==="
+        echo "开始时间: $(date)"
+        # 使用 2 线程编译，避免内存不足
+        make -j2 V=s || {
+          echo "=== 多线程失败，尝试单线程 ==="
+          make -j1 V=s
+        }
         echo "=== 编译完成 ==="
-        echo "时间: $(date)"
+        echo "结束时间: $(date)"
 
-    - name: Collect output
+    - name: Collect firmware
       run: |
+        echo "=== 收集编译产物 ==="
         mkdir -p $GITHUB_WORKSPACE/output
         cd source
-        # 复制编译产物
-        find bin/targets/ -name "*.img.gz" -o -name "*.img" -o -name "*.bin" 2>/dev/null | head -20
-        cp -r bin/targets/* $GITHUB_WORKSPACE/output/ 2>/dev/null || true
+        
+        # 查找所有固件文件
+        echo "查找固件文件..."
+        find bin/targets/ -maxdepth 3 -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" -o -name "*.itb" \) 2>/dev/null
+        
+        # 复制固件文件
+        find bin/targets/ -maxdepth 3 -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" -o -name "*.itb" \) \
+          -exec cp {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null
+        
+        # 如果没找到，复制整个 targets 目录
+        if [ -z "$(ls -A $GITHUB_WORKSPACE/output/ 2>/dev/null)" ]; then
+          echo "未找到标准固件文件，复制整个 targets 目录..."
+          cp -r bin/targets/* $GITHUB_WORKSPACE/output/ 2>/dev/null || true
+        fi
+        
         echo "=== 产物列表 ==="
-        find $GITHUB_WORKSPACE/output -type f | head -30
+        ls -lhR $GITHUB_WORKSPACE/output/ | head -50
+        echo "=== 产物总大小 ==="
         du -sh $GITHUB_WORKSPACE/output/
 
     - name: Upload firmware
       uses: actions/upload-artifact@v4
       with:
-        name: iStoreOS-NanoPC-T4-firmware
+        name: iStoreOS-NanoPC-T4-firmware-${{ github.run_id }}
         path: output/
         retention-days: 30
+        if-no-files-found: warn
 
     - name: Build summary
       if: always()
       run: |
         echo "============================================"
-        echo "  iStoreOS NanoPC-T4 固件编译完成"
+        echo "  iStoreOS NanoPC-T4 编译结果"
         echo "============================================"
         echo "分支: istoreos-24.10"
         echo "目标: NanoPC-T4 (RK3399)"
-        echo "设备: friendlyarm,nanopc-t4"
         echo ""
-        echo "固件已上传至 Artifacts，可在 Actions 页面下载"
-        echo "下载后用 dd 写入 SD 卡:"
-        echo "  gunzip *.img.gz"
-        echo "  sudo dd if=*.img of=/dev/sdX bs=1M status=progress"
+        if [ -d "output" ] && [ "$(ls -A output/ 2>/dev/null)" ]; then
+          echo "✅ 固件已上传至 Artifacts"
+          echo "下载地址: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "烧录命令:"
+          echo "  gunzip iStoreOS-*-NanoPC*.img.gz"
+          echo "  sudo dd if=iStoreOS-*-NanoPC*.img of=/dev/sdX bs=1M status=progress"
+        else
+          echo "❌ 未找到固件文件"
+          echo "请检查编译日志"
+        fi
