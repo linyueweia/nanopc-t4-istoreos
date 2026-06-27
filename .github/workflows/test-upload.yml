@@ -1,0 +1,81 @@
+name: Test Upload Mechanism
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-upload:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Create test firmware files
+      run: |
+        echo "=== 创建测试文件 ==="
+        OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
+        rm -rf "$OUTPUT_DIR"
+        mkdir -p "$OUTPUT_DIR"
+        
+        # 模拟 OpenWrt 编译输出结构
+        echo "这是测试固件文件" > "$OUTPUT_DIR/iStoreOS-NanoPC-T4-test.img"
+        gzip -f "$OUTPUT_DIR/iStoreOS-NanoPC-T4-test.img"
+        
+        # 创建额外的测试文件
+        echo "manifest" > "$OUTPUT_DIR/iStoreOS-NanoPC-T4-test.manifest"
+        echo "config" > "$OUTPUT_DIR/.config"
+        
+        echo "=== 输出目录内容 ==="
+        ls -lh "$OUTPUT_DIR/"
+        echo "=== 输出目录大小 ==="
+        du -sh "$OUTPUT_DIR/"
+
+    - name: Verify files exist
+      id: verify
+      run: |
+        OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
+        FILE_COUNT=$(find "$OUTPUT_DIR" -type f 2>/dev/null | wc -l)
+        echo "文件总数: $FILE_COUNT"
+        
+        if [ "$FILE_COUNT" -eq 0 ]; then
+          echo "错误: 输出目录为空!"
+          exit 1
+        fi
+        
+        echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+        echo "✅ 验证通过: 找到 $FILE_COUNT 个文件"
+
+    - name: Upload firmware artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-firmware-${{ github.run_id }}
+        path: ${{ steps.verify.outputs.output_dir }}/
+        retention-days: 1
+        if-no-files-found: error
+
+    - name: Upload verification
+      if: success()
+      run: |
+        echo "============================================"
+        echo "  ✅ 上传测试成功!"
+        echo "============================================"
+        echo "Artifacts URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        echo ""
+        echo "请检查 Artifacts 是否包含以下文件:"
+        echo "  - iStoreOS-NanoPC-T4-test.img.gz"
+        echo "  - iStoreOS-NanoPC-T4-test.manifest"
+        echo "  - .config"
+
+    - name: Upload failure test
+      if: failure()
+      run: |
+        echo "============================================"
+        echo "  ❌ 上传测试失败!"
+        echo "============================================"
+        echo "请检查:"
+        echo "1. 文件是否确实被创建"
+        echo "2. 路径是否正确"
+        echo "3. upload-artifact 配置是否正确"
