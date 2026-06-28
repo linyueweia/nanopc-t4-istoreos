@@ -163,7 +163,8 @@ jobs:
           find "$SOURCE_DIR/bin/targets/" -type f -name "*squashfs*.img.gz" 2>/dev/null | head -1 | while read f; do
             SIZE=$(du -h "$f" | cut -f1)
             echo "解压 [$SIZE]: $(basename $f)"
-            gunzip -k "$f"
+            # gunzip 可能因 trailing garbage 返回 exit code 2，但文件已成功解压
+            gunzip -kf "$f" 2>/dev/null || true
             cp "${f%.gz}" "$OUTPUT_DIR/"
             rm -f "${f%.gz}"
           done
@@ -172,7 +173,7 @@ jobs:
             find "$SOURCE_DIR/bin/targets/" -type f -name "*.img.gz" 2>/dev/null | head -1 | while read f; do
               SIZE=$(du -h "$f" | cut -f1)
               echo "解压 [$SIZE]: $(basename $f)"
-              gunzip -k "$f"
+              gunzip -kf "$f" 2>/dev/null || true
               cp "${f%.gz}" "$OUTPUT_DIR/"
               rm -f "${f%.gz}"
             done
